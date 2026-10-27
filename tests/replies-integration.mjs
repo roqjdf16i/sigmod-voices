@@ -1,0 +1,35 @@
+import assert from 'node:assert/strict';import {readFileSync} from 'node:fs';
+const base='http://127.0.0.1:8787',admin=readFileSync('.dev.vars','utf8').trim().split('=')[1],receipts=[];
+const request=async(path,data,auth=false)=>fetch(base+path,{method:data?'POST':'GET',headers:{Origin:base,'Content-Type':'application/json',...(auth?{Authorization:`Bearer ${admin}`}:{})},...(data?{body:JSON.stringify(data)}:{})});
+const create=async(path,data,key='a')=>{const r=await request(path,{consent:true,identityToken:key.repeat(64),...data});assert.equal(r.status,201,await r.clone().text());const d=await r.json();receipts.push(d);return d;};
+const publish=async(id,type='post')=>assert.equal((await request('/api/review',{id,type,action:'publish'},true)).status,200);
+await request('/api/nickname',{identityToken:'a'.repeat(64),nickname:'Apple'});
+await request('/api/nickname',{identityToken:'b'.repeat(64),nickname:'Piano'});
+try{
+ const identity=await (await request('/api/identity',{identityToken:'a'.repeat(64)})).json();
+ const root=await create('/api/posts',{kind:'experience',body:'LOCAL REPLY TEST root'});
+ assert.equal(root.nickname,identity.nickname);
+ assert.equal((await request(`/api/replies?post=${root.id}`)).status,404);
+ assert.equal((await request('/api/replies',{postId:root.id,body:'hidden',consent:true,identityToken:'a'.repeat(64)})).status,409);
+ await publish(root.id);
+ const other=await create('/api/posts',{kind:'comment',body:'LOCAL REPLY TEST other'});await publish(other.id);
+ const first=await create('/api/replies',{postId:root.id,body:'LOCAL REPLY TEST first <script>not executable</script>'});
+ let feed=await (await request(`/api/replies?post=${root.id}`)).json();assert.equal(feed.replies.length,0);
+ await publish(first.id,'reply');
+ const second=await create('/api/replies',{postId:root.id,replyTo:first.id,body:'LOCAL REPLY TEST second'},'b');await publish(second.id,'reply');
+ const third=await create('/api/replies',{postId:root.id,replyTo:second.id,body:'LOCAL REPLY TEST third'});await publish(third.id,'reply');
+ feed=await (await request(`/api/replies?post=${root.id}`)).json();assert.equal(feed.replies.length,3);assert.ok(feed.replies.every(r=>r.post_id===root.id));assert.equal(feed.replies[0].is_op,1);assert.equal(feed.replies[1].is_op,0);assert.equal(feed.replies[1].reply_to_name,first.nickname);assert.equal(feed.replies[2].reply_to,second.id);assert.ok(!JSON.stringify(feed).includes('author_key'));assert.ok(!JSON.stringify(feed).includes('delete_hash'));
+ const roots=await (await request('/api/posts')).json();assert.equal(roots.posts.find(r=>r.id===root.id).reply_count,3);
+ assert.equal((await request('/api/replies',{postId:other.id,replyTo:first.id,body:'cross-thread',consent:true,identityToken:'a'.repeat(64)})).status,409);
+ assert.equal((await request('/api/replies',{postId:first.id,body:'cannot nest',consent:true,identityToken:'a'.repeat(64)})).status,409);
+ await create('/api/replies',{postId:root.id,body:'LOCAL REPLY TEST no checkbox',consent:undefined});
+ assert.equal((await request('/api/withdraw',{id:first.id,token:'wrong'})).status,404);
+ assert.equal((await request('/api/withdraw',first)).status,200);
+ feed=await (await request(`/api/replies?post=${root.id}`)).json();assert.equal(feed.replies[0].reply_to,null);assert.equal(feed.replies[0].reply_to_name,first.nickname);
+ const pending=await create('/api/replies',{postId:root.id,body:'LOCAL REPLY TEST pending'});
+ const queue=await (await request('/api/review',null,true)).json();assert.ok(queue.results.some(p=>p.id===pending.id&&p.parent_body==='LOCAL REPLY TEST root'));
+ assert.equal((await request('/api/withdraw',root)).status,200);
+ assert.equal((await request(`/api/replies?post=${root.id}`)).status,404);
+ const after=await (await request('/api/review',null,true)).json();assert.ok(!after.results.some(p=>p.post_id===root.id));
+ console.log('PASS: stable names, two-level replies, mention targets, no cross-thread nesting, OP badge, check queue, counts, deletion targets and cascade.');
+}finally{for(const receipt of receipts)await request('/api/withdraw',receipt);}

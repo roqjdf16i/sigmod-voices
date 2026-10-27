@@ -1,0 +1,1 @@
+{"name":"sigmod-voices","version":"0.1.0","private":true,"type":"module","scripts":{"dev":"wrangler dev --ip 127.0.0.1 --port 8787","db:local":"wrangler d1 migrations apply voices --local","test":"node --test tests/*.test.js"},"devDependencies":{"wrangler":"^4.0.0"},"overrides":{"undici":"^7.30.1"}}
